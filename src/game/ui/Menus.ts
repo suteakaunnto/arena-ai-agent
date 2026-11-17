@@ -81,7 +81,7 @@ export class MenuSystem {
       <div class="menu-overlay">
         <div class="menu-panel" style="max-width:640px;text-align:left;position:relative">
           <div style="font-size:10px;letter-spacing:0.42em;color:#ff8a3d;font-weight:800;margin-bottom:10px">COSTA SOL · OPEN ROAD</div>
-          <h1 class="menu-title" style="font-size:clamp(30px,5.4vw,54px);line-height:1.02;margin-bottom:8px">HORIZON<span style="color:#ff8a3d">/</span>DRIVE</h1>
+          <h1 class="menu-title" style="font-size:clamp(30px,5.4vw,54px);line-height:1.02;margin-bottom:8px">ALAVIDA</h1>
           <div class="menu-sub">12km × 12km / 手続き生成のみ / 単一HTML</div>
           <div style="display:flex;gap:18px;flex-wrap:wrap;margin:18px 0 24px;font-size:12px;color:#9fb0be">
             <span><b style="color:#fff;font-size:16px">${progress.cars}</b> 台のオリジナル車</span>

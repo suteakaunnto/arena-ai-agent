@@ -1,4 +1,4 @@
-# HORIZON-STYLE RACER (original)
+# ALAVIDA
 
 手続き生成だけで作る、オリジナルのオープンワールド風レーシングゲーム。
 設計書 (`docs/DESIGN.md`) に沿って M0〜M9 を段階的に実装する。

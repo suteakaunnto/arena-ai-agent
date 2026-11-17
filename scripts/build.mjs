@@ -33,7 +33,7 @@ async function main() {
   const html = await readFile(path.join(root, "index.html"), "utf8");
   const inlined = html
     .replace('<script type="module" src="./src/main.ts"></script>', `<script type="module">\n${js}\n</script>`)
-    .replace("<title>", "<meta name=\"generator\" content=\"horizon-drive single-file build\" />\n    <title>");
+    .replace("<title>", "<meta name=\"generator\" content=\"alavida single-file build\" />\n    <title>");
 
   await writeFile(path.join(root, "dist/index.html"), inlined, "utf8");
   const kb = (Buffer.byteLength(inlined) / 1024).toFixed(0);
