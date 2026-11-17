@@ -1,0 +1,20 @@
+{
+  "name": "horizon-style-racer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "手続き生成のみで作るオリジナル・オープンワールド風レーシングゲーム (単一HTML出力)",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/serve.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
+    "pack": "node scripts/pack.mjs"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "esbuild": "^0.24.2",
+    "three": "^0.187.0",
+    "typescript": "^5.7.3"
+  }
+}
