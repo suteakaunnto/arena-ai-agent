@@ -5,6 +5,17 @@
  * 依存: なし(DOMのみ)。設定値は Game から注入する。
  */
 
+/**
+ * mm:ss.mmm。ui/Menus.ts は依存を DOM だけに保ちたいので、
+ * race/Circuit.ts の formatTime は import せず同等のものをここに置く。
+ */
+function fmtTime(seconds: number): string {
+  if (!isFinite(seconds) || seconds < 0) return "--:--.---";
+  const m = Math.floor(seconds / 60);
+  const s = seconds - m * 60;
+  return `${String(m).padStart(2, "0")}:${s.toFixed(3).padStart(6, "0")}`;
+}
+
 export interface MenuCallbacks {
   onStart: () => void;
   onGarage: () => void;
@@ -19,6 +30,10 @@ export interface MenuCallbacks {
   onPhotoMode: () => void;
   onFullscreen: () => void;
   onReset: () => void;
+  /** タイムトライアルを開始(コース id)。フリードライブは null */
+  onRaceStart: (circuitId: string | null) => void;
+  /** コース選択画面を開く */
+  onCircuits: () => void;
 }
 
 const STYLE = `
@@ -89,6 +104,7 @@ export class MenuSystem {
             <span><b style="color:#fff;font-size:16px">${progress.world}</b></span>
           </div>
           <button class="menu-btn" data-act="start"><span class="k">▶</span>ドライブを開始<span class="d">Enter / A</span></button>
+          <button class="menu-btn" data-act="circuits"><span class="k">⏱</span>タイムトライアル<span class="d">T</span></button>
           <button class="menu-btn" data-act="garage"><span class="k">◈</span>ガレージ(車を選ぶ)<span class="d">G</span></button>
           <button class="menu-btn" data-act="settings"><span class="k">⚙</span>設定<span class="d">Esc</span></button>
           <button class="menu-btn" data-act="help"><span class="k">?</span>操作説明<span class="d">H</span></button>
@@ -206,6 +222,7 @@ export class MenuSystem {
       ["マップ", "M", "Back", "MAP"],
       ["ポーズ", "Esc / P", "Start", "ポーズ"],
       ["フォトモード", "F", "十字↓", "メニュー内"],
+      ["タイムトライアル", "T", "-", "タイトル/ポーズ"],
       ["リセット", "R", "LB+RB", "—"],
       ["デバッグ HUD", "F3", "—", "—"],
     ];
@@ -241,6 +258,55 @@ export class MenuSystem {
   }
 
   /** リザルト(ラップ等) */
+  /**
+   * コース選択画面。
+   *  @param circuits 有効なコース(名称・長さ・難易度・ベストラップ)
+   */
+  showCircuits(
+    circuits: Array<{
+      id: string;
+      name: string;
+      description: string;
+      lengthKm: number;
+      difficulty: number;
+      best: number;
+    }>
+  ): void {
+    this.current = "circuits";
+    this.root.style.display = "block";
+    const rows = circuits
+      .map((c) => {
+        const stars = "●".repeat(c.difficulty) + "○".repeat(Math.max(0, 5 - c.difficulty));
+        const best = isFinite(c.best) ? fmtTime(c.best) : "--:--.---";
+        return `
+          <button class="menu-btn" data-act="race" data-circuit="${c.id}" style="text-align:left;align-items:flex-start">
+            <span class="k" style="margin-top:2px">▶</span>
+            <span style="flex:1;display:flex;flex-direction:column;gap:3px">
+              <span style="font-weight:800">${c.name}</span>
+              <span style="font-size:11px;color:#9fb0be;font-weight:400;line-height:1.45">${c.description}</span>
+              <span style="font-size:11px;color:#7ad8ff;font-variant-numeric:tabular-nums;font-weight:600">
+                ${c.lengthKm.toFixed(1)} km ・ <span style="color:#ffb066">${stars}</span> ・ BEST ${best}
+              </span>
+            </span>
+          </button>`;
+      })
+      .join("");
+    this.root.innerHTML = `
+      <div class="menu-overlay">
+        <div class="menu-panel" style="max-width:600px;text-align:left">
+          <div class="menu-close" data-act="back">✕</div>
+          <h2 class="menu-title" style="margin-bottom:4px">タイムトライアル</h2>
+          <div class="menu-sub">2 周のベストタイムを競う / ゴーストは無し</div>
+          <div style="display:flex;flex-direction:column;gap:9px;margin-top:16px">
+            ${rows}
+            <button class="menu-btn" data-act="free" style="margin-top:6px"><span class="k">∞</span>フリードライブ(コース無し)<span class="d">Esc</span></button>
+          </div>
+        </div>
+      </div>
+    `;
+    this.wire();
+  }
+
   showResults(data: { title: string; lines: Array<[string, string]>; onRestart: () => void }): void {
     this.current = "results";
     this.root.style.display = "block";
@@ -306,6 +372,15 @@ export class MenuSystem {
             break;
           case "help":
             this.showHelp();
+            break;
+          case "circuits":
+            this.callbacks.onCircuits();
+            break;
+          case "race":
+            this.callbacks.onRaceStart((el as HTMLElement).dataset.circuit ?? null);
+            break;
+          case "free":
+            this.callbacks.onRaceStart(null);
             break;
           case "back":
             this.close();

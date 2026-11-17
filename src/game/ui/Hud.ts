@@ -10,6 +10,7 @@
  *  - ミニマップは道路網を事前に Canvas へ描き、自車位置だけ描き直す。
  *  - デバイスに応じてボタン表示を切り替える。
  */
+import { formatTime } from "../race/Circuit.js";
 import { Vehicle } from "../physics/Vehicle.js";
 import { RoadNetwork } from "../world/Road.js";
 import { Terrain } from "../world/Terrain.js";
@@ -34,6 +35,13 @@ export class Hud {
   private mapBase: HTMLCanvasElement | null = null;
   private timeEl: HTMLDivElement;
   private posEl: HTMLDivElement;
+  // --- レース計測パネル ---
+  private raceEl: HTMLDivElement;
+  private raceLapEl: HTMLDivElement;
+  private raceTimeEl: HTMLDivElement;
+  private raceBestEl: HTMLDivElement;
+  private raceDeltaEl: HTMLDivElement;
+  private raceCountEl: HTMLDivElement;
   private driftEl: HTMLDivElement;
   private assistEl: HTMLDivElement;
   private batteryEl: HTMLDivElement;
@@ -76,6 +84,15 @@ export class Hud {
       <canvas id="hud-map" width="360" height="360" style="position:absolute;left:2.4%;bottom:3.2%;width:clamp(110px,14vw,158px);height:clamp(110px,14vw,158px);border-radius:50%;opacity:0.9"></canvas>
       <div id="hud-assist" style="position:absolute;left:50%;bottom:3%;transform:translateX(-50%);display:flex;gap:6px;font-size:10px;letter-spacing:0.1em;opacity:0.75"></div>
       <div id="hud-pos" style="position:absolute;right:3%;top:3.5%;font-size:clamp(10px,1.1vw,12px);color:#9fb0be;text-align:right;line-height:1.5"></div>
+      <div id="hud-race" style="position:absolute;left:50%;top:2.6%;transform:translateX(-50%);display:none;flex-direction:column;align-items:center;gap:2px;background:linear-gradient(180deg,rgba(8,12,16,0.78),rgba(8,12,16,0.28));padding:8px 22px 10px;border-radius:10px;border:1px solid rgba(255,160,80,0.28)">
+        <div id="hud-race-lap" style="font-size:clamp(9px,1.05vw,11px);letter-spacing:0.28em;color:#9fb0be;font-weight:800">LAP 1/2</div>
+        <div id="hud-race-time" style="font-size:clamp(20px,3vw,32px);font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-0.02em;line-height:1.05">00:00.000</div>
+        <div style="display:flex;gap:14px;font-size:clamp(9px,1.05vw,11px);font-variant-numeric:tabular-nums;align-items:baseline">
+          <span style="color:#8fa3b2">BEST <b id="hud-race-best" style="color:#ffb066;font-weight:800">--:--.---</b></span>
+          <span id="hud-race-delta" style="font-weight:800;color:#7ad8ff"></span>
+        </div>
+        <div id="hud-race-count" style="position:absolute;left:50%;top:100%;transform:translateX(-50%);margin-top:10px;font-size:clamp(38px,7vw,76px);font-weight:900;color:#ff8a3d;text-shadow:0 2px 18px rgba(0,0,0,0.6);display:none;font-variant-numeric:tabular-nums"></div>
+      </div>
     `;
     parent.appendChild(this.root);
 
@@ -86,6 +103,12 @@ export class Hud {
     this.promptEl = this.root.querySelector("#hud-prompt")!;
     this.driftEl = this.root.querySelector("#hud-drift")!;
     this.posEl = this.root.querySelector("#hud-pos")!;
+    this.raceEl = this.root.querySelector("#hud-race")!;
+    this.raceLapEl = this.root.querySelector("#hud-race-lap")!;
+    this.raceTimeEl = this.root.querySelector("#hud-race-time")!;
+    this.raceBestEl = this.root.querySelector("#hud-race-best")!;
+    this.raceDeltaEl = this.root.querySelector("#hud-race-delta")!;
+    this.raceCountEl = this.root.querySelector("#hud-race-count")!;
     this.assistEl = this.root.querySelector("#hud-assist")!;
     this.batteryEl = this.root.querySelector("#hud-drift-score")!;
     this.tachCanvas = this.root.querySelector("#hud-tach")!;
@@ -177,6 +200,43 @@ export class Hud {
   }
 
   /** プロンプト表示(数秒で消える) */
+  /**
+   * レース計測パネルを更新する。null で非表示(フリードライブ)。
+   *  @param info lap 表示 / time ラップタイム / best ベストラップ
+   *              / delta 区間差分テキスト / countdown カウントダウン表示
+   */
+  setRace(
+    info: {
+      lap: number;
+      totalLaps: number;
+      time: number;
+      best: number;
+      delta: string;
+      countdown: string | null;
+      state: "countdown" | "running" | "finished";
+    } | null
+  ): void {
+    if (!info) {
+      this.raceEl.style.display = "none";
+      return;
+    }
+    if (this.raceEl.style.display !== "flex") this.raceEl.style.display = "flex";
+    this.raceLapEl.textContent = `LAP ${Math.min(info.lap, info.totalLaps)}/${info.totalLaps}`;
+    this.raceTimeEl.textContent = formatTime(info.time);
+    this.raceBestEl.textContent = isFinite(info.best) ? formatTime(info.best) : "--:--.---";
+    this.raceDeltaEl.textContent = info.delta;
+    this.raceDeltaEl.style.color = info.delta.startsWith("-") ? "#7ce8a0" : "#ff8a6a";
+    if (info.countdown) {
+      this.raceCountEl.style.display = "block";
+      this.raceCountEl.textContent = info.countdown;
+      const n = Number(info.countdown);
+      this.raceCountEl.style.color = n > 0 ? "#ff8a3d" : "#7ce8a0";
+      this.raceCountEl.style.fontSize = n > 0 ? "clamp(38px,7vw,76px)" : "clamp(30px,5.6vw,62px)";
+    } else {
+      this.raceCountEl.style.display = "none";
+    }
+  }
+
   prompt(text: string, duration = 3): void {
     if (this.lastPrompt === text && this.promptTimer > 0) {
       this.promptTimer = Math.max(this.promptTimer, duration);

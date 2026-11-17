@@ -14,6 +14,10 @@ export interface SaveData {
   totalDistanceKm: number;
   money: number;
   paintColor?: number;
+  /** コース id → ベストラップ(秒) */
+  bestLaps: Record<string, number>;
+  /** コース id → 完走回数 */
+  raceWins: Record<string, number>;
 }
 
 const KEY = "costa_sol_save_v1";
@@ -27,6 +31,8 @@ const DEFAULTS: SaveData = {
   bestDrift: 0,
   totalDistanceKm: 0,
   money: 0,
+  bestLaps: {},
+  raceWins: {},
 };
 
 export class SaveSystem {
@@ -55,6 +61,28 @@ export class SaveSystem {
 
   set<K extends keyof SaveData>(key: K, value: SaveData[K]): void {
     this.data[key] = value;
+    this.scheduleSave();
+  }
+
+  /** コースのベストラップを更新する。更新したら true。 */
+  submitLap(circuitId: string, seconds: number): boolean {
+    if (!isFinite(seconds) || seconds <= 0) return false;
+    const best = this.data.bestLaps[circuitId];
+    if (best !== undefined && best <= seconds) return false;
+    this.data.bestLaps = { ...this.data.bestLaps, [circuitId]: seconds };
+    this.scheduleSave();
+    return true;
+  }
+
+  /** コースのベストラップ(未記録は Infinity) */
+  bestLap(circuitId: string): number {
+    const v = this.data.bestLaps[circuitId];
+    return typeof v === "number" && v > 0 ? v : Infinity;
+  }
+
+  /** 完走を記録する */
+  recordFinish(circuitId: string): void {
+    this.data.raceWins = { ...this.data.raceWins, [circuitId]: (this.data.raceWins[circuitId] ?? 0) + 1 };
     this.scheduleSave();
   }
 
