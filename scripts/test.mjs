@@ -27,6 +27,8 @@ import { SteeringFilter } from "../src/game/input/SteeringFilter.ts";
 import { SimplexNoise, fbm2 } from "../src/game/world/Noise.ts";
 import { VegetationSystem } from "../src/game/world/Vegetation.ts";
 import { Rng, clamp, TAU } from "../src/game/core/math.ts";
+import { buildAllCircuits, formatTime, CIRCUIT_DEFS } from "../src/game/race/Circuit.ts";
+import { RaceSession } from "../src/game/race/RaceSession.ts";
 
 const results = [];
 const check = (name, fn, opts = {}) => {
@@ -167,6 +169,115 @@ check("road: プロジェクト(位置→道路)", () => {
   if (!n.road) throw new Error("nearest が道路を見つけられない");
   if (!n.onRoad) throw new Error("道路上で onRoad=false");
   return "dist=" + q.distance.toFixed(2) + " lateral=" + q.lateral.toFixed(2) + " grip=" + n.grip.toFixed(2);
+});
+
+/* ---------------- レース(タイムトライアル) ---------------- */
+
+const circuits = buildAllCircuits(roads);
+
+check("race: コース構築", () => {
+  if (circuits.length === 0) throw new Error("走行可能なコースが 0 本");
+  const ids = circuits.map((c) => c.def.id);
+  for (const def of CIRCUIT_DEFS) {
+    if (!ids.includes(def.id)) throw new Error("コースが構築できない: " + def.id);
+  }
+  return circuits
+    .map((c) => c.def.id + ":" + (c.length / 1000).toFixed(1) + "km/" + c.gates.length + "門")
+    .join(" ");
+});
+
+check("race: ゲート配置の妥当性", () => {
+  for (const c of circuits) {
+    if (c.gates.length < 8) throw new Error(c.def.id + ": ゲートが少なすぎる " + c.gates.length);
+    for (let i = 1; i < c.gates.length; i++) {
+      if (c.gates[i].s <= c.gates[i - 1].s) {
+        throw new Error(c.def.id + ": ゲートの s が昇順でない @" + i);
+      }
+    }
+    if (Math.abs(c.gates[0].s) > 1e-6) throw new Error(c.def.id + ": スタートが s=0 でない");
+    const last = c.gates[c.gates.length - 1];
+    if (last.s >= c.length) throw new Error(c.def.id + ": ゲートが周回長を超過");
+  }
+  return circuits.map((c) => c.def.id + ":" + c.gates.length).join(" ");
+});
+
+check("race: ゲート判定(位置と幅)", () => {
+  const c = circuits[0];
+  const g = c.gates[1];
+  if (!c.isAtGate(1, g.x, g.z)) throw new Error("ゲート中心で通過判定にならない");
+  const lat = g.width * 0.5 + 5;
+  if (c.isAtGate(1, g.x - g.tz * lat, g.z + g.tx * lat)) throw new Error("ゲート外なのに通過判定");
+  if (c.isAtGate(1, g.x + g.tx * 20, g.z + g.tz * 20)) throw new Error("ゲートから離れているのに通過判定");
+  return "width=" + g.width.toFixed(1) + "m";
+});
+
+check("race: 周回判定(シミュレーション)", () => {
+  const c = circuits[0];
+  const session = new RaceSession(c, 2);
+  const DT = 1 / 60;
+  for (let i = 0; i < 200 && session.state === "countdown"; i++) {
+    session.update(session.startPose.x, session.startPose.z, true, DT);
+  }
+  if (session.state !== "running") throw new Error("カウントダウンが終わらない: " + session.state);
+
+  const gates = c.gates;
+  const samples = c.road.samples;
+  let steps = 0;
+  for (let lap = 0; lap < 2 && session.state === "running"; lap++) {
+    for (let gi = 0; gi < gates.length && session.state === "running"; gi++) {
+      const a = gates[gi];
+      const b = gates[(gi + 1) % gates.length];
+      let sCur = a.s;
+      let sEnd = b.s;
+      if (sEnd <= sCur) sEnd += c.length;
+      while (sCur < sEnd && session.state === "running" && steps < 400000) {
+        const sm = samples[c.road.indexAtS(sCur % c.length)];
+        session.update(sm.x, sm.z, true, DT);
+        sCur += 4;
+        steps++;
+      }
+    }
+  }
+  if (session.state !== "finished") {
+    throw new Error("2 周してもフィニッシュしない: state=" + session.state + " lap=" + session.lap);
+  }
+  if (session.records.length !== 2) throw new Error("ラップ記録が 2 でない: " + session.records.length);
+  const best = Math.min(...session.records.map((r) => r.time));
+  if (!isFinite(best) || best <= 0) throw new Error("ラップタイムが不正: " + best);
+  return "2 周 / best " + formatTime(best) + " / " + steps + " step";
+});
+
+check("race: 取りこぼし救済とリセット耐性", () => {
+  const c = circuits[0];
+  const session = new RaceSession(c, 2);
+  const DT = 1 / 60;
+  for (let i = 0; i < 200 && session.state === "countdown"; i++) {
+    session.update(session.startPose.x, session.startPose.z, true, DT);
+  }
+  const skipped = session.nextGate;
+  const g = c.gates[(skipped + 1) % c.gates.length];
+  session.update(g.x, g.z, true, DT);
+  if (session.nextGate === skipped) throw new Error("飛ばしたゲートが救済されない");
+  const d0 = session.distance;
+  session.update(g.x + 5000, g.z + 5000, true, DT);
+  if (session.distance - d0 > 100) throw new Error("テレポートで走行距離が暴発した");
+  return "skip救済 OK / dist +" + (session.distance - d0).toFixed(0) + "m";
+});
+
+check("race: ベストラップ更新の判定", () => {
+  const c = circuits[0];
+  const s1 = new RaceSession(c, 1, Infinity);
+  s1.state = "running";
+  for (let pass = 0; pass < 2; pass++) {
+    for (let gi = 0; gi < c.gates.length; gi++) {
+      const g = c.gates[gi];
+      s1.update(g.x, g.z, true, 0);
+    }
+  }
+  const r = s1.result(Infinity);
+  if (!isFinite(r.bestLap)) throw new Error("ベストラップが記録されない");
+  if (isFinite(r.bestDelta)) throw new Error("初回なのに差分が出ている");
+  return "best=" + formatTime(r.bestLap);
 });
 
 check("road: スタート地点", () => {

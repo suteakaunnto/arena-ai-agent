@@ -15,6 +15,9 @@ import { PostFX } from "./render/PostFX.js";
 import { QualityScaler } from "./render/QualityScaler.js";
 import { EnvProbe } from "./render/EnvProbe.js";
 import { ParticleSystem } from "./render/Particles.js";
+import { buildAllCircuits, type Circuit } from "./race/Circuit.js";
+import { RaceSession } from "./race/RaceSession.js";
+import { RaceMarkerSet } from "./race/RaceMarkers.js";
 import { World } from "./world/World.js";
 import { Vehicle, PHYSICS_DT } from "./physics/Vehicle.js";
 import { CarView, makeBlobShadowTexture } from "./car/CarView.js";
@@ -82,6 +85,12 @@ export class Game {
   private lastPointer = { x: 0, y: 0 };
   private autopilot = false;
   private raceClock = 0;
+  /** 走行可能なコース一覧(起動時に道路網から構築) */
+  readonly circuits: Circuit[] = [];
+  /** 進行中のセッション。null ならフリードライブ */
+  private race: RaceSession | null = null;
+  private raceMarkers = new RaceMarkerSet();
+
 
   constructor(options: GameOptions) {
     this.container = options.container;
@@ -140,6 +149,11 @@ export class Game {
     this.hud.setWorld(this.world.roads, this.world.terrain);
     this.hud.setDeviceHints(this.input);
 
+    // 走行可能なコースを道路網から構築(閉路のみ)
+    this.circuits.push(...buildAllCircuits(this.world.roads));
+    this.raceMarkers = new RaceMarkerSet();
+    this.pipeline.scene.add(this.raceMarkers.group);
+
     this.engineAudio = new EngineSynth();
     this.ambient = new AmbientAudio();
 
@@ -160,6 +174,8 @@ export class Game {
       onPhotoMode: () => this.togglePhotoMode(),
       onFullscreen: () => this.input.touch.requestFullscreenLandscape(),
       onReset: () => this.rescueVehicle(),
+      onCircuits: () => this.openCircuits(),
+      onRaceStart: (id) => this.startRace(id),
     });
 
     // 昼夜・天候の初期化
@@ -229,6 +245,10 @@ export class Game {
       if (e.code === "KeyH" && this.stateMachine.is("title")) {
         this.menus.showHelp();
       }
+      // T: タイムトライアル(タイトル / ポーズ中から)
+      if (e.code === "KeyT" && this.stateMachine.is("title", "paused")) {
+        this.openCircuits();
+      }
       if (e.code === "KeyF" && this.stateMachine.is("driving")) {
         this.togglePhotoMode();
       }
@@ -240,6 +260,7 @@ export class Game {
   /* ---------------------------------------------------------------- */
 
   toTitle(): void {
+    this.endRace(false);
     this.stateMachine.transition("title");
     this.hud.setVisible(false);
     this.garage.close();
@@ -269,7 +290,105 @@ export class Game {
     });
   }
 
+  /** コース選択画面を開く */
+  openCircuits(): void {
+    if (this.circuits.length === 0) {
+      this.hud.prompt("走行可能な周回路が見つかりません", 2.5);
+      return;
+    }
+    this.hud.setVisible(false);
+    this.menus.showCircuits(
+      this.circuits.map((c) => ({
+        id: c.def.id,
+        name: c.def.name,
+        description: c.def.description,
+        lengthKm: c.length / 1000,
+        difficulty: c.def.difficulty,
+        best: this.save.bestLap(c.def.id),
+      }))
+    );
+  }
+
+  /**
+   * タイムトライアルを開始する。circuitId が null ならフリードライブ。
+   *  車をスタートゲートへ置き、3 秒のカウントダウンから計測を始める。
+   */
+  startRace(circuitId: string | null): void {
+    const circuit = circuitId ? this.circuits.find((c) => c.def.id === circuitId) ?? null : null;
+    if (!circuit) {
+      // フリードライブ: セッションを捨てて通常走行へ
+      this.endRace(false);
+      this.startDriving();
+      return;
+    }
+    this.race = new RaceSession(circuit, 2, this.save.bestLap(circuit.def.id));
+    this.raceMarkers.setCircuit(circuit);
+    this.raceMarkers.setVisible(true);
+
+    // 車をスタート位置へ
+    const p = this.race.startPose;
+    this.vehicle.teleport(p.x, p.z, p.heading);
+    this.camera.snap(this.vehicle);
+
+    this.menus.close();
+    this.garage.close();
+    this.stateMachine.transition("driving");
+    this.hud.setVisible(true);
+    this.hud.setDeviceHints(this.input);
+    this.engineAudio.setActive(true);
+    this.raceClock = 0;
+    this.autopilot = false;
+    this.hud.prompt(`${circuit.def.name} — 3 秒後にスタート`, 3);
+  }
+
+  /** セッションを破棄する。showResults はフィニッシュ時のみ */
+  private endRace(showResults: boolean): void {
+    const race = this.race;
+    this.race = null;
+    this.raceMarkers.setCircuit(null);
+    this.raceMarkers.setVisible(false);
+    this.hud.setRace(null);
+    if (!race) return;
+    if (showResults) this.showRaceResults(race);
+  }
+
+  /** フィニッシュ時のリザルト表示 */
+  private showRaceResults(race: RaceSession): void {
+    const res = race.result(this.save.bestLap(race.circuit.def.id));
+    const prevBest = this.save.bestLap(race.circuit.def.id);
+    const isRecord = isFinite(res.bestLap) && res.bestLap < prevBest;
+    if (isRecord) this.save.submitLap(race.circuit.def.id, res.bestLap);
+    this.save.recordFinish(race.circuit.def.id);
+    this.stateMachine.transition("results");
+    this.hud.setVisible(false);
+    this.engineAudio.setActive(false);
+
+    const lines: Array<[string, string]> = [
+      ["周回", `${res.laps} / ${race.totalLaps}`],
+      ["トータル", fmtLap(res.total)],
+      ["ベストラップ", fmtLap(res.bestLap)],
+    ];
+    // ラップごとの記録(最大 6 周まで)
+    for (const r of res.records.slice(0, 6)) {
+      lines.push([`  LAP ${r.lap}`, fmtLap(r.time)]);
+    }
+    if (isFinite(res.bestDelta)) {
+      lines.push(["前回ベストとの差", (res.bestDelta >= 0 ? "+" : "") + res.bestDelta.toFixed(3)]);
+    }
+    if (isRecord) lines.push(["", "★ NEW RECORD"]);
+    lines.push(["走行距離", `${(res.distance / 1000).toFixed(2)} km`]);
+    lines.push(["コースアウト", `${res.offRoadTime.toFixed(1)} 秒`]);
+
+    this.menus.showResults({
+      title: race.circuit.def.name,
+      lines,
+      onRestart: () => this.startRace(race.circuit.def.id),
+    });
+  }
+
   startDriving(): void {
+    // ここへ来るのはフリードライブ。進行中のセッションは破棄する。
+    this.endRace(false);
     this.menus.close();
     this.garage.close();
     this.stateMachine.transition("driving");
@@ -442,13 +561,15 @@ export class Game {
       this.accumulator += dt;
       let steps = 0;
       const maxSteps = 8;
+      // カウントダウン中は入力を殺す(フライング防止)
+      const locked = this.race?.state === "countdown";
       const input = {
-        steer: snap.steer,
-        throttle: snap.throttle,
-        brake: snap.brake,
-        handbrake: snap.handbrake,
-        shiftUp: snap.pressed.has("shiftUp"),
-        shiftDown: snap.pressed.has("shiftDown"),
+        steer: locked ? 0 : snap.steer,
+        throttle: locked ? 0 : snap.throttle,
+        brake: locked ? 1 : snap.brake,
+        handbrake: locked ? 1 : snap.handbrake,
+        shiftUp: locked ? false : snap.pressed.has("shiftUp"),
+        shiftDown: locked ? false : snap.pressed.has("shiftDown"),
         autoGear: true,
       };
       while (this.accumulator >= PHYSICS_DT && steps < maxSteps) {
@@ -503,6 +624,9 @@ export class Game {
     const fwd = this.vehicle.forward();
     this.particles.updateRain(dt, this.vehicle.state.position, rainIntensity, fwd);
     this.particles.update(dt, this.pipeline.camera.position);
+
+    // --- タイムトライアル ---
+    this.updateRace(dt, paused || this.photoMode);
 
     // --- ワールド ---
     this.world.update(dt, this.pipeline.camera, this.vehicle.state.position, this.qualityIndex, this.elapsed);
@@ -645,6 +769,47 @@ export class Game {
     return { steer, throttle, brake };
   }
 
+  /**
+   * タイムトライアルの進行。
+   *  ポーズ/フォトモード中はラップタイマーを止めるので、
+   *  セッションへ渡す lapTime は自前で積む。
+   */
+  private updateRace(dt: number, frozen: boolean): void {
+    const race = this.race;
+    if (!race) return;
+    const pos = this.vehicle.state.position;
+    const onRoad = this.world.roads.nearest(pos.x, pos.z).onRoad;
+
+    if (race.isActive) {
+      // ポーズ中は dt=0 を渡してタイマーを止める
+      race.update(pos.x, pos.z, onRoad, frozen ? 0 : dt);
+      // カウントダウン中は車を止める(アクセルを踏ませない)
+      if (race.state === "countdown") {
+        this.vehicle.state.velocity.set(0, 0, 0);
+        this.vehicle.state.forwardSpeed = 0;
+        this.vehicle.state.lateralSpeed = 0;
+      }
+    } else if (race.isFinished) {
+      this.endRace(true);
+      return;
+    }
+
+    // マーカーと HUD
+    this.raceMarkers.update(dt, race.nextGate);
+    const countdownText =
+      race.state === "countdown" ? (race.countdown > 0 ? String(Math.ceil(race.countdown)) : "GO") : null;
+    const best = isFinite(race.bestLap) && race.records.length > 0 ? race.bestLap : this.save.bestLap(race.circuit.def.id);
+    this.hud.setRace({
+      lap: race.lap,
+      totalLaps: race.totalLaps,
+      time: race.lapTime,
+      best,
+      delta: race.lastSplitDelta !== 0 ? (race.lastSplitDelta >= 0 ? "+" : "") + race.lastSplitDelta.toFixed(3) : "",
+      countdown: countdownText,
+      state: race.state === "finished" ? "finished" : race.state === "running" ? "running" : "countdown",
+    });
+  }
+
   private updatePostSettings(scaler: ReturnType<QualityScaler["update"]>): void {
     const preset = QUALITY_PRESETS[this.qualityIndex];
     const night = this.world.sky.isNight;
@@ -698,4 +863,12 @@ export class Game {
   get carSpec(): CarSpec {
     return this.currentCar;
   }
+}
+
+/** mm:ss.mmm 形式。Result 画面用。 */
+function fmtLap(seconds: number): string {
+  if (!isFinite(seconds) || seconds < 0) return "--:--.---";
+  const m = Math.floor(seconds / 60);
+  const sec = seconds - m * 60;
+  return `${String(m).padStart(2, "0")}:${sec.toFixed(3).padStart(6, "0")}`;
 }
